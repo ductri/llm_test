@@ -1,0 +1,2 @@
+- Different padding side produces different generated responses. However, both look plausible!
+

@@ -87,7 +87,6 @@ def main():
     for epoch in tqdm(range(ppo_trainer.config.ppo_epochs), "epoch: "):
         for batch in tqdm(ppo_trainer.dataloader):
             query_tensors = batch["input_ids"]
-            __import__('pdb').set_trace()
 
             # #### Get response from gpt2
             # response_tensors = []
@@ -119,8 +118,8 @@ def main():
 
 
     #### Save model
-    init_model.save_pretrained(f'{constants.ROOT}/models/gpt2-positive/')
-    tokenizer.save_pretrained(f'{constants.ROOT}/models/gpt2-positive/')
+    init_model.save_pretrained(f'{constants.ROOT}/models/ppo_gpt2_positive/')
+    tokenizer.save_pretrained(f'{constants.ROOT}/models/ppo_gpt2_positive/')
 
 
 

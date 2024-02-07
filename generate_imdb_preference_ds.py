@@ -1,13 +1,17 @@
 import itertools
+from pathlib import Path
 
+from tqdm import tqdm
 import pandas as pd
 import torch
 from datasets import load_dataset
-from transformers import GPT2Tokenizer, GPT2LMHeadModel, AutoTokenizer, pipeline
+from transformers import GPT2Tokenizer, GPT2LMHeadModel, AutoTokenizer, pipeline, AutoModelForSequenceClassification
 from torch.utils.data import DataLoader
 from trl.core import LengthSampler
 
-import constants
+from our import constants
+from our.evaluate_alignment import my_generation
+from our.sentiment_gt import SentimentGT
 
 
 def build_dataset(tokenizer):
@@ -25,7 +29,6 @@ def build_dataset(tokenizer):
     """
     # load imdb with datasets
     ds = load_dataset('imdb', split="train", cache_dir=f'{constants.ROOT}/.cache/')
-    ds = ds.select(range(100))
     ds = ds.rename_columns({"text": "review"})
     ds = ds.filter(lambda x: len(x["review"]) > 200, batched=False)
 
@@ -49,52 +52,49 @@ if __name__ == "__main__":
     device = 'cuda'
     imdb_model = GPT2LMHeadModel.from_pretrained(f'{constants.ROOT}/models/gpt2-imdb/checkpoint-700/')
     imdb_model.to(device)
-
-    tokenizer = AutoTokenizer.from_pretrained("gpt2-large")
+    tokenizer = AutoTokenizer.from_pretrained(f'{constants.ROOT}/models/gpt2-imdb/checkpoint-700/')
     tokenizer.pad_token = tokenizer.eos_token
+
     train_dataset = build_dataset(tokenizer)
 
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=False, collate_fn=collator)
-    num_return_sequences = 4
-    generation_kwargs = {
-        "min_length": -1,
-        "top_k": 0.0,
-        "top_p": 1.0,
-        "do_sample": True,
-        "pad_token_id": tokenizer.eos_token_id,
-        "max_new_tokens": 16,
-        "num_return_sequences": num_return_sequences,
-    }
-    all_data = []
-    sentiment_pipeline = pipeline("sentiment-analysis",
-            model="siebert/sentiment-roberta-large-english",
-            device=device,
-            cache_dir=f'{constants.ROOT}/.cache/'
-            )
-    for batch in train_loader:
-        query_tensors = batch['input_ids']
-        max_length = 8
-        padding_tensor = tokenizer.encode(tokenizer.pad_token)[0]*torch.ones(max_length, dtype=torch.int32)
-        batch_attention_mask = []
-        for i, query in enumerate(query_tensors):
-            query_tensors[i] = torch.concat((padding_tensor, query))[-max_length:]
-            attention_mask = torch.zeros(8, dtype=torch.int32)
-            attention_mask[-query.shape[0]:] = 1
-            batch_attention_mask.append(attention_mask)
-        print()
-        batch_attention_mask = torch.stack(batch_attention_mask).to(device)
-        query_tensors_batch = torch.stack(query_tensors).to(device)
-        outputs = imdb_model.generate(query_tensors_batch, attention_mask=batch_attention_mask, **generation_kwargs)
-        __import__('pdb').set_trace()
-        sentiment_scores = sentiment_pipeline(outputs)
+    sentiment_gt = SentimentGT()
 
-        for i in range(batch_size):
+    batch_size = 256
+
+    # sentiment_model = AutoModelForSequenceClassification.from_pretrained(
+    #         pretrained_model_name_or_path="siebert/sentiment-roberta-large-english",
+    #         cache_dir=f'{constants.ROOT}/.cache/')
+    # sentiment_tokenizer = AutoTokenizer.from_pretrained("siebert/sentiment-roberta-large-english",
+    #         cache_dir=f'{constants.ROOT}/.cache/')
+    # sentiment_pipeline = pipeline("sentiment-analysis",
+    #         model=sentiment_model,
+    #         tokenizer=tokenizer,
+    #         device=device)
+    # sent_kwargs = {"top_k": None, "function_to_apply": "softmax", "batch_size": batch_size}
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, drop_last=True, collate_fn=collator)
+    num_return_sequences = 4
+    max_new_tokens = 16
+    all_data = []
+    for batch in tqdm(train_loader):
+        text_queries = batch['query']
+        max_input_length = 8
+        text_resps = my_generation(imdb_model, tokenizer, text_queries,
+                max_input_length=max_input_length,
+                do_sample=True, num_return_sequences=num_return_sequences,
+                include_input=False)
+        text_queries = itertools.chain(*[[item]*num_return_sequences for item in text_queries])
+        full_sentences = [p+r for p, r in zip(text_queries, text_resps)]
+        assert len(full_sentences) == batch_size*num_return_sequences
+        sentiment_scores = sentiment_gt.get_score(full_sentences)
+
+        for i in range(len(batch['query'])):
             prompt = batch['query'][i]
-            list_pairs = list(itertools.combinations(
-                range(i*num_return_sequences, (i+1)*num_return_sequences), 2))
+            list_pairs = itertools.combinations(range(i*num_return_sequences, (i+1)*num_return_sequences), 2)
+            list_pairs = list(list_pairs)
             for pair in list_pairs:
-                res1_text = outputs[pair[0]]
-                res2_text = outputs[pair[1]]
+                res1_text = text_resps[pair[0]]
+                res2_text = text_resps[pair[1]]
                 sentiment_score1 = sentiment_scores[pair[0]]
                 sentiment_score2 = sentiment_scores[pair[1]]
                 if sentiment_score1 > sentiment_score2:
@@ -103,6 +103,9 @@ if __name__ == "__main__":
                     all_data.append((prompt, res2_text, sentiment_score2, res1_text, sentiment_score1))
 
     df = pd.DataFrame(all_data, columns=['prompt',  'good_response',  'good_response_score',  'bad_response',  'bad_response_score'])
-    df.to_csv('data/sentiment_imdb_reference_dataset.csv', index=None)
+    Path('./data').mkdir(exist_ok=True)
+    path_to_file = 'data/sentiment_imdb_preference_dataset.csv'
+    df.to_csv(path_to_file, index=None)
+    print(f'Saved perference dataset to `{path_to_file}`')
 
 

@@ -9,8 +9,7 @@ from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from trl.core import LengthSampler
 import wandb
 
-import constants as CONST
-import utils
+from our import constants, utils
 
 
 def build_dataset(config, dataset_name="imdb", input_min_text_length=2, input_max_text_length=8):
@@ -29,7 +28,7 @@ def build_dataset(config, dataset_name="imdb", input_min_text_length=2, input_ma
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
     tokenizer.pad_token = tokenizer.eos_token
     # load imdb with datasets
-    ds = load_dataset(dataset_name, split="train", cache_dir=f'{CONST.ROOT}/.cache/')
+    ds = load_dataset(dataset_name, split="train", cache_dir=f'{constants.ROOT}/.cache/')
     ds = ds.rename_columns({"text": "review"})
     ds = ds.filter(lambda x: len(x["review"]) > 200, batched=False)
 
@@ -58,16 +57,16 @@ def main():
 
     sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_size": 16}
 
-    wandb.init()
-    dataset = build_dataset(config)
+    wandb.init(project=constants.PROJ_NAME, tags=['ppo', 'train'])
+    prompt_dataset = build_dataset(config)
 
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name, cache_dir=f'{CONST.ROOT}/.cache/')
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name, cache_dir=f'{constants.ROOT}/.cache/')
     print(f'Created model!!! #train_params={utils.count_parameters(model)}')
-    ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name, cache_dir=f'{CONST.ROOT}/.cache/')
+    ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(config.model_name, cache_dir=f'{constants.ROOT}/.cache/')
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
 
     tokenizer.pad_token = tokenizer.eos_token
-    ppo_trainer = PPOTrainer(config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)
+    ppo_trainer = PPOTrainer(config, model, ref_model, tokenizer, dataset=prompt_dataset, data_collator=collator)
 
     device = ppo_trainer.accelerator.device
     if ppo_trainer.accelerator.num_processes == 1:
@@ -109,7 +108,8 @@ def main():
         #### Compute sentiment score
         texts = [q + r for q, r in zip(batch["query"], batch["response"])]
         pipe_outputs = sentiment_pipe(texts, **sent_kwargs)
-        rewards = [torch.tensor(output[1]["score"]) for output in pipe_outputs]
+        rewards = [torch.tensor(output[1]["score"]) if output[1]['label']=='POSITIVE' \
+                else torch.tensor(output[0]["score"]) for output in pipe_outputs]
 
         #### Run PPO step
         stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
