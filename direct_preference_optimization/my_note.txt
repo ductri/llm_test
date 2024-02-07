@@ -1,0 +1,4 @@
+- `chosen_input_ids` is it result from encoding `prompt` which is a concatenation of "query" and "response"?
+- how to compute pi(x, y)? the language model only produce prob for each token, not a whole sequence.
+- HuggingFace tutorial
+    + https://huggingface.co/learn/nlp-course/en/chapter2/5?fw=pt
